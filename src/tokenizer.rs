@@ -6,7 +6,7 @@ use indicatif::ProgressBar;
 
 use ciborium::de::from_reader;
 
-type TokenID = u32;
+type TokenID = u16;
 
 pub struct BPETokenizer {
     merge_rules: IndexMap<(TokenID, TokenID), TokenID>,
