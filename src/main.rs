@@ -1,15 +1,16 @@
-use std::{
-    fs::File,
-    io::{Read, Write},
-    path::Path,
-};
+#![recursion_limit = "256"]
+use std::{fs::File, io::Read, path::Path};
 
 use crate::tokenizer::{BPETokenizer, END_TOKEN, train_bpe};
 
+#[allow(dead_code)]
+mod model;
+#[allow(dead_code)]
 mod tokenizer;
 
 use ciborium::into_writer;
 
+#[allow(dead_code)]
 fn training_tokenizer(
     input_path: &Path,
     output_path: &Path,
@@ -25,6 +26,7 @@ fn training_tokenizer(
     Ok(into_writer(&merge_rules, output_file)?)
 }
 
+#[allow(dead_code)]
 fn ch01_training_tokenizer() {
     let input_path = Path::new("./data/tiny_codes.txt");
     let output_path = Path::new("./data/merge_rules.cbor");
@@ -33,6 +35,7 @@ fn ch01_training_tokenizer() {
     training_tokenizer(input_path, output_path, vocab_size).unwrap();
 }
 
+#[allow(dead_code)]
 fn ch01_tokenizer_check() {
     let input_path = Path::new("./data/tiny_codes.txt");
     let output_path = Path::new("./data/merge_rules.cbor");
@@ -66,6 +69,7 @@ fn ch01_tokenizer_check() {
     }
 }
 
+#[allow(dead_code)]
 fn ch01_convert_binary() {
     let input_path = Path::new("./data/tiny_codes.txt");
     let output_path = Path::new("./data/tiny_codes.bin");
@@ -83,8 +87,47 @@ fn ch01_convert_binary() {
     into_writer(&binary, output_file).unwrap();
 }
 
+use burn::backend::Cuda;
+use burn::prelude::*;
+use burn::tensor::{Distribution, Tensor};
+
+#[allow(dead_code)]
+fn ch02_model_check() {
+    type Backend = Cuda;
+
+    let device = Default::default();
+
+    let vocab_size = 1000;
+    let max_context_len = 256;
+    let embed_dim = 384;
+    let n_head = 6;
+    let n_layer = 6;
+    let ff_dim = 4 * embed_dim;
+    let dropout_rate = 0.1;
+    let model = model::GPTConfig::new(
+        vocab_size,
+        max_context_len,
+        embed_dim,
+        n_head,
+        n_layer,
+        ff_dim,
+        dropout_rate,
+    )
+    .init(&device);
+
+    let distribution = Distribution::Uniform(0.0, vocab_size as f64);
+    let x =
+        Tensor::<Backend, 2, Int>::random(Shape::new([1, max_context_len]), distribution, &device);
+    dbg!(&x);
+
+    let logits = model.forward(x);
+    dbg!(&logits);
+}
+
 fn main() {
-    ch01_training_tokenizer();
-    ch01_tokenizer_check();
-    ch01_convert_binary();
+    // ch01_training_tokenizer();
+    // ch01_tokenizer_check();
+    // ch01_convert_binary();
+
+    ch02_model_check();
 }
