@@ -6,14 +6,14 @@ use indicatif::ProgressBar;
 
 use ciborium::de::from_reader;
 
-type TokenID = u16;
+pub type TokenID = u16;
 
 pub struct BPETokenizer {
     merge_rules: IndexMap<(TokenID, TokenID), TokenID>,
     id_to_bytes: IndexMap<TokenID, Vec<u8>>,
     vocab_size: usize,
     end_token: String,
-    end_token_id: TokenID,
+    pub end_token_id: TokenID,
     show_progress: bool,
 }
 

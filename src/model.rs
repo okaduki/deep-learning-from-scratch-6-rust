@@ -2,13 +2,19 @@ use core::f32;
 
 use burn::{
     module::{Initializer, Param},
-    nn::{Dropout, DropoutConfig, Embedding, EmbeddingConfig, Linear, LinearConfig},
+    nn::{
+        Dropout, DropoutConfig, Embedding, EmbeddingConfig, Linear, LinearConfig,
+        loss::CrossEntropyLossConfig,
+    },
     prelude::*,
     tensor::Tensor,
     tensor::activation::softmax,
-    tensor::backend::Backend,
+    tensor::backend::{AutodiffBackend, Backend},
     tensor::module::linear,
+    train::{InferenceStep, SequenceOutput, TrainOutput, TrainStep},
 };
+
+use crate::training::CodeBotBatch;
 
 use burn::module::Module;
 
@@ -53,8 +59,8 @@ pub struct GPT<B: Backend> {
 
 #[derive(Config, Debug)]
 pub struct GPTConfig {
-    vocab_size: usize,
-    max_context_len: usize,
+    pub vocab_size: usize,
+    pub max_context_len: usize,
     embed_dim: usize,
     n_head: usize,
     n_layer: usize,
@@ -109,6 +115,51 @@ impl<B: Backend> GPT<B> {
             Some(self.unembed_bias.val()),
         );
         logits
+    }
+
+    fn output(&self, item: CodeBotBatch<B>) -> SequenceOutput<B> {
+        let tokens = item.tokens;
+        let targets = item.labels;
+        let device = tokens.device();
+        let logits = self.forward(tokens);
+        let [batch_size, sequence_length, vocab_size] = logits.dims();
+        let loss = CrossEntropyLossConfig::new()
+            .with_pad_tokens(Some(vec![65535]))
+            .init(&device)
+            .forward(
+                logits
+                    .clone()
+                    .reshape([batch_size * sequence_length, vocab_size]),
+                targets.clone().reshape([batch_size * sequence_length]),
+            )
+            .mean();
+
+        SequenceOutput {
+            loss,
+            logits,
+            predictions: None,
+            targets,
+        }
+    }
+}
+
+impl<B: Backend> InferenceStep for GPT<B> {
+    type Input = CodeBotBatch<B>;
+    type Output = SequenceOutput<B>;
+
+    fn step(&self, item: Self::Input) -> Self::Output {
+        self.output(item)
+    }
+}
+
+impl<B: AutodiffBackend> TrainStep for GPT<B> {
+    type Input = CodeBotBatch<B>;
+    type Output = SequenceOutput<B>;
+
+    fn step(&self, item: Self::Input) -> TrainOutput<Self::Output> {
+        let output = self.output(item);
+        let grads = output.loss.clone().backward();
+        TrainOutput::new(self, grads, output)
     }
 }
 
@@ -223,7 +274,7 @@ impl<B: Backend> MultiHeadAttention<B> {
             Tensor::<B, 2>::ones(Shape::new([context_size, context_size]), &scores.device())
                 .tril(0)
                 .reshape([1, 1, context_size, context_size]);
-        let scores = scores.mask_fill(mask.equal_elem(1), f32::NEG_INFINITY);
+        let scores = scores.mask_fill(mask.equal_elem(0), f32::NEG_INFINITY);
 
         let weights = softmax(scores, 3); // [B,H,C,C]
         let weights = self.attention_dropout.forward(weights);

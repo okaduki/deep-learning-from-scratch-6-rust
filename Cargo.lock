@@ -2116,6 +2116,7 @@ dependencies = [
  "indexmap",
  "indicatif",
  "serde",
+ "serde_json",
 ]
 
 [[package]]
