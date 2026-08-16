@@ -14,7 +14,7 @@ use burn::{
     train::{InferenceStep, SequenceOutput, TrainOutput, TrainStep},
 };
 
-use crate::training::CodeBotBatch;
+use crate::training::{CodeBotBatch, CodeBotGRPOBatch};
 
 use burn::module::Module;
 
@@ -44,6 +44,72 @@ fn init_linear<B: Backend>(d_input: usize, d_output: usize, device: &B::Device) 
     linear.bias = Some(Initializer::Zeros.init([d_output], device));
     linear
 }
+
+#[derive(Module, Debug)]
+pub struct SFTTrainer<B: Backend> {
+    pub policy: GPT<B>,
+}
+
+impl<B: Backend> SFTTrainer<B> {
+    pub fn new(policy: GPT<B>) -> Self {
+        SFTTrainer { policy }
+    }
+}
+
+impl<B: Backend> InferenceStep for SFTTrainer<B> {
+    type Input = CodeBotBatch<B>;
+    type Output = SequenceOutput<B>;
+
+    fn step(&self, item: Self::Input) -> Self::Output {
+        self.policy.output(item)
+    }
+}
+
+impl<B: AutodiffBackend> TrainStep for SFTTrainer<B> {
+    type Input = CodeBotBatch<B>;
+    type Output = SequenceOutput<B>;
+
+    fn step(&self, item: Self::Input) -> TrainOutput<Self::Output> {
+        let output = self.policy.output(item);
+        let grads = output.loss.clone().backward();
+        TrainOutput::new(self, grads, output)
+    }
+}
+
+#[derive(Module, Debug)]
+pub struct GRPOTrainer<B: Backend> {
+    pub policy: GPT<B>,
+}
+
+impl<B: Backend> GRPOTrainer<B> {
+    pub fn new(policy: GPT<B>) -> Self {
+        GRPOTrainer { policy }
+    }
+
+    pub fn set_dropout(&mut self, prob: f64) {
+        self.policy.set_dropout(prob);
+    }
+}
+
+// impl<B: Backend> InferenceStep for GRPOTrainer<B> {
+//     type Input = CodeBotGRPOBatch<B>;
+//     type Output = SequenceOutput<B>;
+
+//     fn step(&self, item: Self::Input) -> Self::Output {
+//         self.policy.output(item)
+//     }
+// }
+
+// impl<B: AutodiffBackend> TrainStep for GRPOTrainer<B> {
+//     type Input = CodeBotGRPOBatch<B>;
+//     type Output = SequenceOutput<B>;
+
+//     fn step(&self, item: Self::Input) -> TrainOutput<Self::Output> {
+//         let output = self.policy.output(item);
+//         let grads = output.loss.clone().backward();
+//         TrainOutput::new(self, grads, output)
+//     }
+// }
 
 #[derive(Module, Debug)]
 pub struct GPT<B: Backend> {
@@ -94,6 +160,13 @@ impl GPTConfig {
 }
 
 impl<B: Backend> GPT<B> {
+    pub fn set_dropout(&mut self, prob: f64) {
+        self.dropout.prob = prob;
+        for block in self.blocks.iter_mut() {
+            block.set_dropout(prob);
+        }
+    }
+
     pub fn forward(&self, ids: Tensor<B, 2, Int>) -> Tensor<B, 3, Float> {
         let [_batch_size, context_len] = ids.dims();
         let device = ids.device();
@@ -143,26 +216,6 @@ impl<B: Backend> GPT<B> {
     }
 }
 
-impl<B: Backend> InferenceStep for GPT<B> {
-    type Input = CodeBotBatch<B>;
-    type Output = SequenceOutput<B>;
-
-    fn step(&self, item: Self::Input) -> Self::Output {
-        self.output(item)
-    }
-}
-
-impl<B: AutodiffBackend> TrainStep for GPT<B> {
-    type Input = CodeBotBatch<B>;
-    type Output = SequenceOutput<B>;
-
-    fn step(&self, item: Self::Input) -> TrainOutput<Self::Output> {
-        let output = self.output(item);
-        let grads = output.loss.clone().backward();
-        TrainOutput::new(self, grads, output)
-    }
-}
-
 #[derive(Module, Debug)]
 struct Block<B: Backend> {
     norm1: LayerNorm<B>,
@@ -199,6 +252,11 @@ impl BlockConfig {
 }
 
 impl<B: Backend> Block<B> {
+    fn set_dropout(&mut self, prob: f64) {
+        self.attention.set_dropout(prob);
+        self.ffn.set_dropout(prob);
+    }
+
     fn forward(&self, x: Tensor<B, 3>) -> Tensor<B, 3> {
         let x = x.clone() + self.attention.forward(self.norm1.forward(x));
         let x = x.clone() + self.ffn.forward(self.norm2.forward(x));
@@ -249,6 +307,11 @@ impl MultiHeadAttentionConfig {
 }
 
 impl<B: Backend> MultiHeadAttention<B> {
+    fn set_dropout(&mut self, prob: f64) {
+        self.attention_dropout.prob = prob;
+        self.output_dropout.prob = prob;
+    }
+
     fn forward(&self, x: Tensor<B, 3>) -> Tensor<B, 3> {
         let [batch_size, context_size, _embed_size] = x.dims(); // [B,C,E]
 
@@ -311,7 +374,7 @@ impl LayerNormConfig {
         LayerNorm {
             embed_dim: self.embed_dim,
             gamma: Param::from_tensor(Tensor::ones(Shape::new([self.embed_dim]), device)),
-            beta: Param::from_tensor(Tensor::ones(Shape::new([self.embed_dim]), device)),
+            beta: Param::from_tensor(Tensor::zeros(Shape::new([self.embed_dim]), device)),
             eps: self.eps,
         }
     }
@@ -370,6 +433,10 @@ impl FFNConfig {
 }
 
 impl<B: Backend> FFN<B> {
+    fn set_dropout(&mut self, prob: f64) {
+        self.dropout.prob = prob;
+    }
+
     fn forward(&self, x: Tensor<B, 3>) -> Tensor<B, 3> {
         let x = self.linear1.forward(x);
         let x = self.gelu.forward(x);

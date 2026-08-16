@@ -56,7 +56,7 @@ impl BPETokenizer {
 
     pub fn encode(&self, text: &str) -> Vec<TokenID> {
         let mut ids = vec![];
-        let texts: Vec<_> = text.split(&self.end_token).collect();
+        let texts: Vec<_> = text.split_inclusive(&self.end_token).collect();
 
         let pb_opt = if self.show_progress {
             Some(ProgressBar::new(texts.len() as u64))
@@ -72,13 +72,23 @@ impl BPETokenizer {
             );
         }
 
-        for (i, sentence) in texts.iter().enumerate() {
+        for sentence in texts {
             if let Some(pb) = &pb_opt {
                 pb.inc(1);
             }
 
-            if i > 0 {
+            if let Some(sentence) = sentence.strip_suffix(&self.end_token) {
+                for pretoken in pretokenize(sentence) {
+                    let mut tokens = encode_text(pretoken);
+
+                    for (&pair, &new_id) in &self.merge_rules {
+                        tokens = merge(&tokens, pair, new_id);
+                    }
+
+                    ids.append(&mut tokens);
+                }
                 ids.push(self.end_token_id);
+                continue;
             }
 
             for pretoken in pretokenize(sentence) {

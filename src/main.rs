@@ -186,6 +186,11 @@ fn ch03_sft() {
     training::sft();
 }
 
+#[allow(dead_code)]
+fn ch03_grpo() {
+    training::GRPO();
+}
+
 fn main() {
     // ch01_training_tokenizer();
     // ch01_tokenizer_check();
@@ -193,5 +198,6 @@ fn main() {
     // ch03_training();
     // ch03_generate();
     // ch03_sft();
-    ch03_chat();
+    // ch03_chat();
+    ch03_grpo();
 }
