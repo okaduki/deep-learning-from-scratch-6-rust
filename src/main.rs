@@ -21,12 +21,7 @@ fn training_tokenizer(
     output_path: &Path,
     vocab_size: usize,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let mut input_file = File::open(input_path)?;
-
-    let mut text = String::new();
-    input_file.read_to_string(&mut text)?;
-
-    let merge_rules = train_bpe(&text, vocab_size);
+    let merge_rules = train_bpe(input_path, vocab_size);
     let output_file = File::create(output_path)?;
     Ok(into_writer(&merge_rules, output_file)?)
 }
@@ -191,6 +186,15 @@ fn ch03_grpo() {
     training::GRPO();
 }
 
+#[allow(dead_code)]
+fn ch04_training_tokenizer() {
+    let input_path = Path::new("./data/tiny_stories_train.txt");
+    let output_path = Path::new("./data/tiny_stories_merge_rules.cbor");
+    let vocab_size = 10000;
+
+    training_tokenizer(input_path, output_path, vocab_size).unwrap();
+}
+
 fn main() {
     // ch01_training_tokenizer();
     // ch01_tokenizer_check();
@@ -199,5 +203,6 @@ fn main() {
     // ch03_generate();
     // ch03_sft();
     // ch03_chat();
-    ch03_grpo();
+    // ch03_grpo();
+    ch04_training_tokenizer();
 }
