@@ -63,6 +63,48 @@ impl BPETokenizer {
         Ok(BPETokenizer::new(&merge_rules, end_token))
     }
 
+    pub fn encode_chunks(&self, input_path: &Path) -> Vec<TokenID> {
+        let chunks = split_chunk(&input_path);
+        let ranges: Vec<(usize, usize)> = chunks.windows(2).map(|sl| (sl[0], sl[1])).collect();
+
+        let pb = ProgressBar::new(ranges.len() as u64);
+        pb.set_style(
+            indicatif::ProgressStyle::default_bar()
+                .template("[{elapsed_precise}] {bar:40} {pos}/{len}({percent}%), {per_sec} ({eta})")
+                .unwrap(),
+        );
+
+        let task_count = rayon::current_num_threads() * 8;
+        let ranges_per_task = ranges.len().div_ceil(task_count).max(1);
+
+        let encodeds: Vec<_> = ranges
+            .par_chunks(ranges_per_task)
+            .map(|group| {
+                let mut buf = Vec::new();
+                let input_file = File::open(input_path).unwrap();
+                let mut encoded = Vec::new();
+
+                group.iter().for_each(|&(begin, end)| {
+                    buf.resize(end - begin, 0);
+
+                    input_file
+                        .read_at(&mut buf, begin as u64)
+                        .expect("seek error");
+
+                    let text = String::from_utf8_lossy(&buf).to_string();
+                    encoded.extend(self.encode(&text));
+                    pb.inc(1);
+                });
+
+                encoded
+            })
+            .collect();
+        let encoded = encodeds.concat();
+        pb.finish();
+
+        encoded
+    }
+
     pub fn encode(&self, text: &str) -> Vec<TokenID> {
         let mut ids = vec![];
         let texts: Vec<_> = text.split_inclusive(&self.end_token).collect();
@@ -86,28 +128,36 @@ impl BPETokenizer {
                 pb.inc(1);
             }
 
-            if let Some(sentence) = sentence.strip_suffix(&self.end_token) {
-                for pretoken in pretokenize(sentence) {
-                    let mut tokens = encode_text(pretoken);
-
-                    for (&pair, &new_id) in &self.merge_rules {
-                        tokens = merge(&tokens, pair, new_id);
-                    }
-
-                    ids.append(&mut tokens);
-                }
-                ids.push(self.end_token_id);
-                continue;
-            }
-
+            let (sentence, has_end_id) = sentence
+                .strip_suffix(&self.end_token)
+                .map_or_else(|| (sentence, false), |s| (s, true));
             for pretoken in pretokenize(sentence) {
                 let mut tokens = encode_text(pretoken);
 
-                for (&pair, &new_id) in &self.merge_rules {
-                    tokens = merge(&tokens, pair, new_id);
+                while tokens.len() > 1 {
+                    let mut counts = IndexMap::new();
+                    count_pairs(&tokens, &mut counts, 1);
+
+                    if let Some((best_pair, _)) = counts.iter().max_by_key(|&x| {
+                        if self.merge_rules.contains_key(x.0) {
+                            (*x.1, *x.0, -1_i32)
+                        } else {
+                            (0, (0, 0), 0)
+                        }
+                    }) {
+                        if let Some(&new_id) = self.merge_rules.get(best_pair) {
+                            tokens = merge(&tokens, *best_pair, new_id);
+                        } else {
+                            break;
+                        }
+                    }
                 }
 
                 ids.append(&mut tokens);
+            }
+
+            if has_end_id {
+                ids.push(self.end_token_id);
             }
         }
         if let Some(pb) = &pb_opt {
@@ -162,46 +212,48 @@ fn merge(ids: &[TokenID], pair: (TokenID, TokenID), new_id: TokenID) -> Vec<Toke
     merged
 }
 
+pub fn split_chunk(text_path: &Path) -> Vec<usize> {
+    let mut input_file = File::open(text_path).expect("file not found.");
+
+    const CHUNK_SIZE: usize = 4096;
+    let mut buffer = [0; CHUNK_SIZE];
+    let end_token = END_TOKEN.as_bytes();
+    let end_token_len = end_token.len();
+    let mut chunk_pos = vec![0];
+
+    loop {
+        let offset = input_file.stream_position().unwrap() as usize;
+        let n = input_file.read(&mut buffer).unwrap();
+        if n == 0 {
+            break;
+        }
+
+        let chunk = &buffer[..n];
+        if let Some(pos) = chunk.windows(end_token_len).position(|w| w == end_token) {
+            let next_pos = offset + pos + end_token_len;
+            chunk_pos.push(next_pos);
+            input_file
+                .seek(std::io::SeekFrom::Start(next_pos as u64))
+                .unwrap();
+        } else if n == CHUNK_SIZE {
+            input_file
+                .seek(std::io::SeekFrom::Current(-(end_token_len as i64)))
+                .unwrap();
+        } else {
+            chunk_pos.push(input_file.metadata().unwrap().len() as usize);
+            break;
+        }
+    }
+
+    chunk_pos
+}
+
 pub fn train_bpe(text_path: &Path, vocab_size: usize) -> IndexMap<(TokenID, TokenID), TokenID> {
     if vocab_size <= 257 {
         return IndexMap::new();
     }
 
-    let chunk_pos = {
-        let mut input_file = File::open(text_path).expect("file not found.");
-
-        const CHUNK_SIZE: usize = 4096;
-        let mut buffer = [0; CHUNK_SIZE];
-        let end_token = END_TOKEN.as_bytes();
-        let end_token_len = end_token.len();
-        let mut chunk_pos = vec![0];
-
-        loop {
-            let offset = input_file.stream_position().unwrap() as usize;
-            let n = input_file.read(&mut buffer).unwrap();
-            if n == 0 {
-                break;
-            }
-
-            let chunk = &buffer[..n];
-            if let Some(pos) = chunk.windows(end_token_len).position(|w| w == end_token) {
-                let next_pos = offset + pos + end_token_len;
-                chunk_pos.push(next_pos);
-                input_file
-                    .seek(std::io::SeekFrom::Start(next_pos as u64))
-                    .unwrap();
-            } else if n == CHUNK_SIZE {
-                input_file
-                    .seek(std::io::SeekFrom::Current(-(end_token_len as i64)))
-                    .unwrap();
-            } else {
-                chunk_pos.push(input_file.metadata().unwrap().len() as usize);
-                break;
-            }
-        }
-
-        chunk_pos
-    };
+    let chunk_pos = split_chunk(text_path);
 
     let mut pretoken_counts: IndexMap<String, usize> = IndexMap::new();
     {

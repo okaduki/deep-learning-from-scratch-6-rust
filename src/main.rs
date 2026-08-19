@@ -1,10 +1,13 @@
 #![recursion_limit = "256"]
 #![allow(unused_imports)]
 use std::fs;
+use std::os::unix::fs::FileExt;
 use std::{fs::File, io::Read, path::Path};
 
-use crate::tokenizer::{BPETokenizer, END_TOKEN, train_bpe};
+use crate::tokenizer::{BPETokenizer, END_TOKEN, split_chunk, train_bpe};
 use crate::training::{chat, generate};
+
+use indicatif::ProgressBar;
 
 #[allow(dead_code)]
 mod model;
@@ -195,6 +198,45 @@ fn ch04_training_tokenizer() {
     training_tokenizer(input_path, output_path, vocab_size).unwrap();
 }
 
+#[allow(dead_code)]
+fn ch04_tokenizer_convert() {
+    let input_path = Path::new("./data/tiny_stories_train.txt");
+    let rule_path = Path::new("./data/tiny_stories_merge_rules.cbor");
+    let output_path = Path::new("./data/tiny_stories_train.bin");
+    let vocab_size = 10000;
+
+    let tokenizer = BPETokenizer::load_from(rule_path, END_TOKEN).unwrap();
+
+    for id in 256..266 {
+        println!("{} -> '{}'", id, tokenizer.decode(&[id]));
+    }
+
+    for id in (vocab_size - 10)..vocab_size {
+        println!("{} ->  '{}'", id, tokenizer.decode(&[id]));
+    }
+
+    {
+        let mut input_file = File::open(input_path).unwrap();
+        let mut text = String::new();
+        input_file.read_to_string(&mut text).unwrap();
+
+        let original_text: String = text.chars().take(10000).collect();
+        let original_binary = original_text.as_bytes();
+        let encoded = tokenizer.encode(&original_text);
+
+        println!(
+            "binary size: {} / {} ({:.2} % compressed.)",
+            encoded.len(),
+            original_binary.len(),
+            (encoded.len() as f64) / (original_binary.len() as f64) * 100.0,
+        );
+    }
+
+    let binary = tokenizer.encode_chunks(input_path);
+    let output_file = File::create(output_path).unwrap();
+    into_writer(&binary, output_file).unwrap();
+}
+
 fn main() {
     // ch01_training_tokenizer();
     // ch01_tokenizer_check();
@@ -204,5 +246,6 @@ fn main() {
     // ch03_sft();
     // ch03_chat();
     // ch03_grpo();
-    ch04_training_tokenizer();
+    // ch04_training_tokenizer();
+    // ch04_tokenizer_convert();
 }
